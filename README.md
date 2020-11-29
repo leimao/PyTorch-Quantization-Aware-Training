@@ -2,7 +2,7 @@
 
 ## Introduction
 
-PyTorch post-training static quantization example for ResNet.
+PyTorch quantization aware training example for ResNet.
 
 ## Usages
 
@@ -26,6 +26,7 @@ python cifar.py
 
 ## References
 
+* [PyTorch Quantization Aware Training]()
 * [PyTorch Static Quantization](https://leimao.github.io/blog/PyTorch-Static-Quantization/)
 * [PyTorch CIFAR10 Tutorial](https://pytorch.org/tutorials/beginner/blitz/cifar10_tutorial.html)
 * [PyTorch Transfer Learning Tutorial](https://pytorch.org/tutorials/beginner/transfer_learning_tutorial.html)

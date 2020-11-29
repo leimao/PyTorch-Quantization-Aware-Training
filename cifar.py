@@ -83,11 +83,10 @@ def evaluate_model(model, test_loader, device, criterion=None):
 
     return eval_loss, eval_accuracy
 
-def train_model(model, train_loader, test_loader, device):
+def train_model(model, train_loader, test_loader, device, num_epochs=50):
 
     # The training configurations were not carefully selected.
     learning_rate = 1e-2
-    num_epochs = 20
 
     criterion = nn.CrossEntropyLoss()
 
@@ -96,6 +95,11 @@ def train_model(model, train_loader, test_loader, device):
     # It seems that SGD optimizer is better than Adam optimizer for ResNet18 training on CIFAR10.
     optimizer = optim.SGD(model.parameters(), lr=learning_rate, momentum=0.9, weight_decay=1e-5)
     # optimizer = optim.Adam(model.parameters(), lr=learning_rate, betas=(0.9, 0.999), eps=1e-08, weight_decay=0, amsgrad=False)
+
+    # Evaluation
+    model.eval()
+    eval_loss, eval_accuracy = evaluate_model(model=model, test_loader=test_loader, device=device, criterion=criterion)
+    print("Epoch: {:02d} Eval Loss: {:.3f} Eval Acc: {:.3f}".format(-1, eval_loss, eval_accuracy))
 
     for epoch in range(num_epochs):
 
@@ -264,9 +268,10 @@ def main():
     train_loader, test_loader = prepare_dataloader(num_workers=8, train_batch_size=128, eval_batch_size=256)
     
     # Train model.
-    # model = train_model(model=model, train_loader=train_loader, test_loader=test_loader, device=cuda_device)
+    print("Training Model...")
+    model = train_model(model=model, train_loader=train_loader, test_loader=test_loader, device=cuda_device)
     # Save model.
-    # save_model(model=model, model_dir=model_dir, model_filename=model_filename)
+    save_model(model=model, model_dir=model_dir, model_filename=model_filename)
     # Load a pretrained model.
     model = load_model(model=model, model_filepath=model_filepath, device=cuda_device)
     # Move the model to CPU since static quantization does not support CUDA currently.
@@ -274,11 +279,9 @@ def main():
     # Make a copy of the model for layer fusion
     fused_model = copy.deepcopy(model)
 
-    # model.eval()
     model.train()
-    # The model has to be switched to evaluation mode before any layer fusion.
-    # Otherwise the quantization will not work correctly.
-    # fused_model.eval()
+    # The model has to be switched to training mode before any layer fusion.
+    # Otherwise the quantization aware training will not work correctly.
     fused_model.train()
 
     # Fuse the model in place rather manually.
@@ -297,9 +300,11 @@ def main():
     print(fused_model)
 
     # Model and fused model should be equivalent.
+    model.eval()
+    fused_model.eval()
     assert model_equivalence(model_1=model, model_2=fused_model, device=cpu_device, rtol=1e-03, atol=1e-06, num_tests=100, input_size=(1,3,32,32)), "Fused model is not equivalent to the original model!"
 
-    # Prepare the model for static quantization. This inserts observers in
+    # Prepare the model for quantization aware training. This inserts observers in
     # the model that will observe activation tensors during calibration.
     quantized_model = QuantizedResNet18(model_fp32=fused_model)
     # Using un-fused model will fail.
@@ -317,48 +322,51 @@ def main():
     # Print quantization configurations
     print(quantized_model.qconfig)
 
-    # https://pytorch.org/docs/master/torch.quantization.html#torch.quantization.prepare
-    torch.quantization.prepare(quantized_model, inplace=True)
+    # https://pytorch.org/docs/stable/_modules/torch/quantization/quantize.html#prepare_qat
+    torch.quantization.prepare_qat(quantized_model, inplace=True)
 
     # # Use training data for calibration.
-    # calibrate_model(model=quantized_model, loader=train_loader, device=cpu_device)
+    print("Training QAT Model...")
+    quantized_model.train()
     train_model(model=quantized_model, train_loader=train_loader, test_loader=test_loader, device=cuda_device)
 
     # quantized_model = torch.quantization.convert(quantized_model, inplace=True)
 
-    # # Using high-level static quantization wrapper
-    # # The above steps, including torch.quantization.prepare, calibrate_model, and torch.quantization.convert, are also equivalent to
-    # # quantized_model = torch.quantization.quantize(model=quantized_model, run_fn=calibrate_model, run_args=[train_loader], mapping=None, inplace=False)
+    # Using high-level static quantization wrapper
+    # The above steps, including torch.quantization.prepare, calibrate_model, and torch.quantization.convert, are also equivalent to
+    # quantized_model = torch.quantization.quantize_qat(model=quantized_model, run_fn=train_model, run_args=[train_loader, test_loader, cuda_device], mapping=None, inplace=False)
 
-    # quantized_model.eval()
+    quantized_model.eval()
 
-    # # Print quantized model.
-    # print(quantized_model)
+    # Print quantized model.
+    print(quantized_model)
 
-    # # Save quantized model.
+    # Save quantized model.
     # save_torchscript_model(model=quantized_model, model_dir=model_dir, model_filename=quantized_model_filename)
 
-    # # Load quantized model.
+    # Load quantized model.
     # quantized_jit_model = load_torchscript_model(model_filepath=quantized_model_filepath, device=cpu_device)
+    quantized_jit_model = quantized_model
 
-    # _, fp32_eval_accuracy = evaluate_model(model=model, test_loader=test_loader, device=cpu_device, criterion=None)
-    # _, int8_eval_accuracy = evaluate_model(model=quantized_jit_model, test_loader=test_loader, device=cpu_device, criterion=None)
+    _, fp32_eval_accuracy = evaluate_model(model=model, test_loader=test_loader, device=cpu_device, criterion=None)
+    _, int8_eval_accuracy = evaluate_model(model=quantized_jit_model, test_loader=test_loader, device=cpu_device, criterion=None)
 
-    # # Skip this assertion since the values might deviate a lot.
-    # # assert model_equivalence(model_1=model, model_2=quantized_jit_model, device=cpu_device, rtol=1e-01, atol=1e-02, num_tests=100, input_size=(1,3,32,32)), "Quantized model deviates from the original model too much!"
+    # Skip this assertion since the values might deviate a lot.
+    # assert model_equivalence(model_1=model, model_2=quantized_jit_model, device=cpu_device, rtol=1e-01, atol=1e-02, num_tests=100, input_size=(1,3,32,32)), "Quantized model deviates from the original model too much!"
 
-    # print("FP32 evaluation accuracy: {:.3f}".format(fp32_eval_accuracy))
-    # print("INT8 evaluation accuracy: {:.3f}".format(int8_eval_accuracy))
+    print("FP32 evaluation accuracy: {:.3f}".format(fp32_eval_accuracy))
+    print("INT8 evaluation accuracy: {:.3f}".format(int8_eval_accuracy))
 
-    # fp32_cpu_inference_latency = measure_inference_latency(model=model, device=cpu_device, input_size=(1,3,32,32), num_samples=100)
-    # int8_cpu_inference_latency = measure_inference_latency(model=quantized_model, device=cpu_device, input_size=(1,3,32,32), num_samples=100)
-    # int8_jit_cpu_inference_latency = measure_inference_latency(model=quantized_jit_model, device=cpu_device, input_size=(1,3,32,32), num_samples=100)
-    # fp32_gpu_inference_latency = measure_inference_latency(model=model, device=cuda_device, input_size=(1,3,32,32), num_samples=100)
+    fp32_cpu_inference_latency = measure_inference_latency(model=model, device=cpu_device, input_size=(1,3,32,32), num_samples=100)
+    int8_cpu_inference_latency = measure_inference_latency(model=quantized_model, device=cpu_device, input_size=(1,3,32,32), num_samples=100)
+    int8_jit_cpu_inference_latency = measure_inference_latency(model=quantized_jit_model, device=cpu_device, input_size=(1,3,32,32), num_samples=100)
+    int8_jit_gpu_inference_latency = measure_inference_latency(model=quantized_jit_model, device=cuda_device, input_size=(1,3,32,32), num_samples=100)
+    fp32_gpu_inference_latency = measure_inference_latency(model=model, device=cuda_device, input_size=(1,3,32,32), num_samples=100)
     
-    # print("FP32 CPU Inference Latency: {:.2f} ms / sample".format(fp32_cpu_inference_latency * 1000))
-    # print("FP32 CUDA Inference Latency: {:.2f} ms / sample".format(fp32_gpu_inference_latency * 1000))
-    # print("INT8 CPU Inference Latency: {:.2f} ms / sample".format(int8_cpu_inference_latency * 1000))
-    # print("INT8 JIT CPU Inference Latency: {:.2f} ms / sample".format(int8_jit_cpu_inference_latency * 1000))
+    print("FP32 CPU Inference Latency: {:.2f} ms / sample".format(fp32_cpu_inference_latency * 1000))
+    print("FP32 CUDA Inference Latency: {:.2f} ms / sample".format(fp32_gpu_inference_latency * 1000))
+    print("INT8 CPU Inference Latency: {:.2f} ms / sample".format(int8_cpu_inference_latency * 1000))
+    print("INT8 JIT CPU Inference Latency: {:.2f} ms / sample".format(int8_jit_cpu_inference_latency * 1000))
 
 if __name__ == "__main__":
 
