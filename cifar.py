@@ -27,12 +27,14 @@ def prepare_dataloader(num_workers=8, train_batch_size=128, eval_batch_size=256)
         transforms.RandomCrop(32, padding=4),
         transforms.RandomHorizontalFlip(),
         transforms.ToTensor(),
-        transforms.Normalize((0.4914, 0.4822, 0.4465), (0.2023, 0.1994, 0.2010)),
+        # transforms.Normalize((0.4914, 0.4822, 0.4465), (0.2023, 0.1994, 0.2010)),
+        transforms.Normalize(mean=(0.485, 0.456, 0.406), std=(0.229, 0.224, 0.225))
     ])
 
     test_transform = transforms.Compose([
         transforms.ToTensor(),
-        transforms.Normalize((0.4914, 0.4822, 0.4465), (0.2023, 0.1994, 0.2010)),
+        # transforms.Normalize((0.4914, 0.4822, 0.4465), (0.2023, 0.1994, 0.2010)),
+        transforms.Normalize(mean=(0.485, 0.456, 0.406), std=(0.229, 0.224, 0.225))
     ])
 
     train_set = torchvision.datasets.CIFAR10(root="data", train=True, download=True, transform=train_transform) 
@@ -83,17 +85,18 @@ def evaluate_model(model, test_loader, device, criterion=None):
 
     return eval_loss, eval_accuracy
 
-def train_model(model, train_loader, test_loader, device, num_epochs=50):
+def train_model(model, train_loader, test_loader, device, learning_rate=1e-1, num_epochs=200):
 
     # The training configurations were not carefully selected.
-    learning_rate = 1e-2
 
     criterion = nn.CrossEntropyLoss()
 
     model.to(device)
 
     # It seems that SGD optimizer is better than Adam optimizer for ResNet18 training on CIFAR10.
-    optimizer = optim.SGD(model.parameters(), lr=learning_rate, momentum=0.9, weight_decay=1e-5)
+    optimizer = optim.SGD(model.parameters(), lr=learning_rate, momentum=0.9, weight_decay=1e-4)
+    # scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=500)
+    scheduler = torch.optim.lr_scheduler.MultiStepLR(optimizer, milestones=[100, 150], gamma=0.1, last_epoch=-1)
     # optimizer = optim.Adam(model.parameters(), lr=learning_rate, betas=(0.9, 0.999), eps=1e-08, weight_decay=0, amsgrad=False)
 
     # Evaluation
@@ -135,7 +138,10 @@ def train_model(model, train_loader, test_loader, device, num_epochs=50):
         model.eval()
         eval_loss, eval_accuracy = evaluate_model(model=model, test_loader=test_loader, device=device, criterion=criterion)
 
-        print("Epoch: {:02d} Train Loss: {:.3f} Train Acc: {:.3f} Eval Loss: {:.3f} Eval Acc: {:.3f}".format(epoch, train_loss, train_accuracy, eval_loss, eval_accuracy))
+        # Set learning rate scheduler
+        scheduler.step()
+
+        print("Epoch: {:03d} Train Loss: {:.3f} Train Acc: {:.3f} Eval Loss: {:.3f} Eval Acc: {:.3f}".format(epoch, train_loss, train_accuracy, eval_loss, eval_accuracy))
 
     return model
 
@@ -269,9 +275,9 @@ def main():
     
     # Train model.
     print("Training Model...")
-    model = train_model(model=model, train_loader=train_loader, test_loader=test_loader, device=cuda_device)
+    # model = train_model(model=model, train_loader=train_loader, test_loader=test_loader, device=cuda_device, learning_rate=1e-1, num_epochs=200)
     # Save model.
-    save_model(model=model, model_dir=model_dir, model_filename=model_filename)
+    # save_model(model=model, model_dir=model_dir, model_filename=model_filename)
     # Load a pretrained model.
     model = load_model(model=model, model_filepath=model_filepath, device=cuda_device)
     # Move the model to CPU since static quantization does not support CUDA currently.
@@ -328,13 +334,14 @@ def main():
     # # Use training data for calibration.
     print("Training QAT Model...")
     quantized_model.train()
-    train_model(model=quantized_model, train_loader=train_loader, test_loader=test_loader, device=cuda_device)
-
-    # quantized_model = torch.quantization.convert(quantized_model, inplace=True)
+    train_model(model=quantized_model, train_loader=train_loader, test_loader=test_loader, device=cuda_device, learning_rate=1e-3, num_epochs=10)
+    quantized_model.to(cpu_device)
 
     # Using high-level static quantization wrapper
     # The above steps, including torch.quantization.prepare, calibrate_model, and torch.quantization.convert, are also equivalent to
     # quantized_model = torch.quantization.quantize_qat(model=quantized_model, run_fn=train_model, run_args=[train_loader, test_loader, cuda_device], mapping=None, inplace=False)
+
+    quantized_model = torch.quantization.convert(quantized_model, inplace=True)
 
     quantized_model.eval()
 
@@ -342,11 +349,10 @@ def main():
     print(quantized_model)
 
     # Save quantized model.
-    # save_torchscript_model(model=quantized_model, model_dir=model_dir, model_filename=quantized_model_filename)
+    save_torchscript_model(model=quantized_model, model_dir=model_dir, model_filename=quantized_model_filename)
 
     # Load quantized model.
-    # quantized_jit_model = load_torchscript_model(model_filepath=quantized_model_filepath, device=cpu_device)
-    quantized_jit_model = quantized_model
+    quantized_jit_model = load_torchscript_model(model_filepath=quantized_model_filepath, device=cpu_device)
 
     _, fp32_eval_accuracy = evaluate_model(model=model, test_loader=test_loader, device=cpu_device, criterion=None)
     _, int8_eval_accuracy = evaluate_model(model=quantized_jit_model, test_loader=test_loader, device=cpu_device, criterion=None)
@@ -360,7 +366,6 @@ def main():
     fp32_cpu_inference_latency = measure_inference_latency(model=model, device=cpu_device, input_size=(1,3,32,32), num_samples=100)
     int8_cpu_inference_latency = measure_inference_latency(model=quantized_model, device=cpu_device, input_size=(1,3,32,32), num_samples=100)
     int8_jit_cpu_inference_latency = measure_inference_latency(model=quantized_jit_model, device=cpu_device, input_size=(1,3,32,32), num_samples=100)
-    int8_jit_gpu_inference_latency = measure_inference_latency(model=quantized_jit_model, device=cuda_device, input_size=(1,3,32,32), num_samples=100)
     fp32_gpu_inference_latency = measure_inference_latency(model=model, device=cuda_device, input_size=(1,3,32,32), num_samples=100)
     
     print("FP32 CPU Inference Latency: {:.2f} ms / sample".format(fp32_cpu_inference_latency * 1000))
