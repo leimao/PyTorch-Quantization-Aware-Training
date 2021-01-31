@@ -132,7 +132,7 @@ def train_model(model,
                                               test_loader=test_loader,
                                               device=device,
                                               criterion=criterion)
-    print("Epoch: {:02d} Eval Loss: {:.3f} Eval Acc: {:.3f}".format(
+    print("Epoch: {:03d} Eval Loss: {:.3f} Eval Acc: {:.3f}".format(
         0, eval_loss, eval_accuracy))
 
     for epoch in range(num_epochs):
