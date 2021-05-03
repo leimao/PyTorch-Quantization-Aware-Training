@@ -31,16 +31,14 @@ def prepare_dataloader(num_workers=8,
         transforms.RandomCrop(32, padding=4),
         transforms.RandomHorizontalFlip(),
         transforms.ToTensor(),
-        # transforms.Normalize((0.4914, 0.4822, 0.4465), (0.2023, 0.1994, 0.2010)),
-        transforms.Normalize(mean=(0.485, 0.456, 0.406),
-                             std=(0.229, 0.224, 0.225))
+        transforms.Normalize((0.4914, 0.4822, 0.4465), (0.2023, 0.1994, 0.2010)),
+        # transforms.Normalize(mean=(0.485, 0.456, 0.406), std=(0.229, 0.224, 0.225)),
     ])
 
     test_transform = transforms.Compose([
         transforms.ToTensor(),
-        # transforms.Normalize((0.4914, 0.4822, 0.4465), (0.2023, 0.1994, 0.2010)),
-        transforms.Normalize(mean=(0.485, 0.456, 0.406),
-                             std=(0.229, 0.224, 0.225))
+        transforms.Normalize((0.4914, 0.4822, 0.4465), (0.2023, 0.1994, 0.2010)),
+        # transforms.Normalize(mean=(0.485, 0.456, 0.406), std=(0.229, 0.224, 0.225)),
     ])
 
     train_set = torchvision.datasets.CIFAR10(root="data",
@@ -78,22 +76,24 @@ def evaluate_model(model, test_loader, device, criterion=None):
     running_loss = 0
     running_corrects = 0
 
-    for inputs, labels in test_loader:
+    with torch.no_grad():
 
-        inputs = inputs.to(device)
-        labels = labels.to(device)
+        for inputs, labels in test_loader:
 
-        outputs = model(inputs)
-        _, preds = torch.max(outputs, 1)
+            inputs = inputs.to(device)
+            labels = labels.to(device)
 
-        if criterion is not None:
-            loss = criterion(outputs, labels).item()
-        else:
-            loss = 0
+            outputs = model(inputs)
+            _, preds = torch.max(outputs, 1)
 
-        # statistics
-        running_loss += loss * inputs.size(0)
-        running_corrects += torch.sum(preds == labels.data)
+            if criterion is not None:
+                loss = criterion(outputs, labels).item()
+            else:
+                loss = 0
+
+            # statistics
+            running_loss += loss * inputs.size(0)
+            running_corrects += torch.sum(preds == labels.data)
 
     eval_loss = running_loss / len(test_loader.dataset)
     eval_accuracy = running_corrects / len(test_loader.dataset)
@@ -118,12 +118,9 @@ def train_model(model,
     optimizer = optim.SGD(model.parameters(),
                           lr=learning_rate,
                           momentum=0.9,
-                          weight_decay=1e-4)
-    # scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=500)
-    scheduler = torch.optim.lr_scheduler.MultiStepLR(optimizer,
-                                                     milestones=[100, 150],
-                                                     gamma=0.1,
-                                                     last_epoch=-1)
+                          weight_decay=5e-4)
+    scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=num_epochs)
+    # scheduler = torch.optim.lr_scheduler.MultiStepLR(optimizer, milestones=[100, 150], gamma=0.1, ast_epoch=-1)
     # optimizer = optim.Adam(model.parameters(), lr=learning_rate, betas=(0.9, 0.999), eps=1e-08, weight_decay=0, amsgrad=False)
 
     # Evaluation
