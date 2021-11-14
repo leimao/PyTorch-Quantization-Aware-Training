@@ -1,4 +1,4 @@
-FROM nvcr.io/nvidia/cuda:10.2-cudnn8-devel-ubuntu18.04
+FROM nvcr.io/nvidia/cuda:11.3.1-cudnn8-devel-ubuntu20.04
 
 ENV DEBIAN_FRONTEND noninteractive
 
@@ -32,8 +32,7 @@ RUN apt-get install -y --no-install-recommends \
         valgrind \
         libsm6 \
         libxext6 \
-        libxrender-dev \
-        sudo
+        libxrender-dev
 RUN apt-get clean
 
 RUN cd /usr/local/bin && \
@@ -47,11 +46,9 @@ ENV LC_ALL en_US.UTF-8
 ENV LANG en_US.UTF-8
 ENV LANGUAGE en_US.UTF-8
 
-# Install CMake
-RUN cd /tmp && \
-    wget https://github.com/Kitware/CMake/releases/download/v3.16.8/cmake-3.16.8-Linux-x86_64.sh && \
-    chmod +x cmake-3.16.8-Linux-x86_64.sh && \
-    ./cmake-3.16.8-Linux-x86_64.sh --prefix=/usr/local --exclude-subdir --skip-license && \
-    rm ./cmake-3.16.8-Linux-x86_64.sh
+RUN pip install -f https://download.pytorch.org/whl/cu113/torch_stable.html \
+                torch==1.10.0+cu113 \
+                torchvision==0.11.1+cu113 \
+                torchaudio==0.10.0+cu113
 
-RUN pip install torch==1.8.1 torchvision==0.9.1
+RUN pip install onnxruntime==1.9.0

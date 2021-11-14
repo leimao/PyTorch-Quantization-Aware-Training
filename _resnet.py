@@ -1,7 +1,10 @@
+# resnet.py
+# Modified from
+# https://github.com/pytorch/vision/blob/release/0.8.0/torchvision/models/resnet.py
 import torch
 from torch import Tensor
 import torch.nn as nn
-from torchvision._internally_replaced_utils import load_state_dict_from_url
+from torchvision.models.utils import load_state_dict_from_url
 from typing import Type, Any, Callable, Union, List, Optional
 
 __all__ = [
@@ -12,15 +15,15 @@ __all__ = [
 
 model_urls = {
     'resnet18':
-    'https://download.pytorch.org/models/resnet18-f37072fd.pth',
+    'https://download.pytorch.org/models/resnet18-5c106cde.pth',
     'resnet34':
-    'https://download.pytorch.org/models/resnet34-b627a593.pth',
+    'https://download.pytorch.org/models/resnet34-333f7ec4.pth',
     'resnet50':
-    'https://download.pytorch.org/models/resnet50-0676ba61.pth',
+    'https://download.pytorch.org/models/resnet50-19c8e357.pth',
     'resnet101':
-    'https://download.pytorch.org/models/resnet101-63fe2227.pth',
+    'https://download.pytorch.org/models/resnet101-5d3b4d8f.pth',
     'resnet152':
-    'https://download.pytorch.org/models/resnet152-394f9c45.pth',
+    'https://download.pytorch.org/models/resnet152-b121ed2d.pth',
     'resnext50_32x4d':
     'https://download.pytorch.org/models/resnext50_32x4d-7cdf4587.pth',
     'resnext101_32x8d':
@@ -82,6 +85,7 @@ class BasicBlock(nn.Module):
         # Both self.conv1 and self.downsample layers downsample the input when stride != 1
         self.conv1 = conv3x3(inplanes, planes, stride)
         self.bn1 = norm_layer(planes)
+        # Rename relu to relu1
         self.relu1 = nn.ReLU(inplace=True)
         self.conv2 = conv3x3(planes, planes)
         self.bn2 = norm_layer(planes)
@@ -106,7 +110,7 @@ class BasicBlock(nn.Module):
 
         # Use FloatFunctional for addition for quantization compatibility
         # out += identity
-        # out = self.relu(out)
+        # out = torch.add(identity, out)
         out = self.skip_add.add(identity, out)
         out = self.relu2(out)
 
@@ -139,17 +143,15 @@ class Bottleneck(nn.Module):
         # Both self.conv2 and self.downsample layers downsample the input when stride != 1
         self.conv1 = conv1x1(inplanes, width)
         self.bn1 = norm_layer(width)
-        self.relu1 = nn.ReLU(inplace=True)
         self.conv2 = conv3x3(width, width, stride, groups, dilation)
         self.bn2 = norm_layer(width)
         self.conv3 = conv1x1(width, planes * self.expansion)
         self.bn3 = norm_layer(planes * self.expansion)
-        self.relu2 = nn.ReLU(inplace=True)
+        self.relu1 = nn.ReLU(inplace=True)
         self.downsample = downsample
         self.stride = stride
         self.skip_add = nn.quantized.FloatFunctional()
-        # Remember to use two independent ReLU for layer fusion.
-        self.relu3 = nn.ReLU(inplace=True)
+        self.relu2 = nn.ReLU(inplace=True)
 
     def forward(self, x: Tensor) -> Tensor:
         identity = x
@@ -160,7 +162,7 @@ class Bottleneck(nn.Module):
 
         out = self.conv2(out)
         out = self.bn2(out)
-        out = self.relu2(out)
+        out = self.relu(out)
 
         out = self.conv3(out)
         out = self.bn3(out)
@@ -168,11 +170,10 @@ class Bottleneck(nn.Module):
         if self.downsample is not None:
             identity = self.downsample(x)
 
-        # Use FloatFunctional for addition for quantization compatibility
         # out += identity
-        # out = self.relu(out)
+        # out = torch.add(identity, out)
         out = self.skip_add.add(identity, out)
-        out = self.relu3(out)
+        out = self.relu2(out)
 
         return out
 

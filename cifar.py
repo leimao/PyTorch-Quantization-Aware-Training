@@ -7,6 +7,8 @@ import torch.optim as optim
 import torchvision
 from torchvision import datasets, transforms
 
+import onnxruntime
+
 import time
 import copy
 import numpy as np
@@ -31,14 +33,16 @@ def prepare_dataloader(num_workers=8,
         transforms.RandomCrop(32, padding=4),
         transforms.RandomHorizontalFlip(),
         transforms.ToTensor(),
-        # transforms.Normalize((0.4914, 0.4822, 0.4465), (0.2023, 0.1994, 0.2010)),
+        # transforms.Normalize((0.4914, 0.4822, 0.4465),
+        #                      (0.2023, 0.1994, 0.2010)),
         transforms.Normalize(mean=(0.485, 0.456, 0.406),
                              std=(0.229, 0.224, 0.225))
     ])
 
     test_transform = transforms.Compose([
         transforms.ToTensor(),
-        # transforms.Normalize((0.4914, 0.4822, 0.4465), (0.2023, 0.1994, 0.2010)),
+        # transforms.Normalize((0.4914, 0.4822, 0.4465),
+        #                      (0.2023, 0.1994, 0.2010)),
         transforms.Normalize(mean=(0.485, 0.456, 0.406),
                              std=(0.229, 0.224, 0.225))
     ])
@@ -70,6 +74,7 @@ def prepare_dataloader(num_workers=8,
     return train_loader, test_loader
 
 
+@torch.no_grad()
 def evaluate_model(model, test_loader, device, criterion=None):
 
     model.eval()
@@ -119,12 +124,18 @@ def train_model(model,
                           lr=learning_rate,
                           momentum=0.9,
                           weight_decay=1e-4)
-    # scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=500)
+    # scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer,
+    #                                                        T_max=500)
     scheduler = torch.optim.lr_scheduler.MultiStepLR(optimizer,
                                                      milestones=[100, 150],
                                                      gamma=0.1,
                                                      last_epoch=-1)
-    # optimizer = optim.Adam(model.parameters(), lr=learning_rate, betas=(0.9, 0.999), eps=1e-08, weight_decay=0, amsgrad=False)
+    # optimizer = optim.Adam(model.parameters(),
+    #                        lr=learning_rate,
+    #                        betas=(0.9, 0.999),
+    #                        eps=1e-08,
+    #                        weight_decay=0,
+    #                        amsgrad=False)
 
     # Evaluation
     model.eval()
@@ -183,17 +194,7 @@ def train_model(model,
     return model
 
 
-def calibrate_model(model, loader, device=torch.device("cpu:0")):
-
-    model.to(device)
-    model.eval()
-
-    for inputs, labels in loader:
-        inputs = inputs.to(device)
-        labels = labels.to(device)
-        _ = model(inputs)
-
-
+@torch.no_grad()
 def measure_inference_latency(model,
                               device,
                               input_size=(1, 3, 32, 32),
@@ -216,6 +217,39 @@ def measure_inference_latency(model,
             _ = model(x)
             torch.cuda.synchronize()
         end_time = time.time()
+    elapsed_time = end_time - start_time
+    elapsed_time_ave = elapsed_time / num_samples
+
+    return elapsed_time_ave
+
+
+def measure_onnxruntime_inference_latency(onnx_model_filepath,
+                                          execution_providers,
+                                          num_samples=100,
+                                          num_warmups=10):
+
+    sess_options = onnxruntime.SessionOptions()
+    sess_options.graph_optimization_level = onnxruntime.GraphOptimizationLevel.ORT_ENABLE_EXTENDED
+    sess = onnxruntime.InferenceSession(onnx_model_filepath, sess_options)
+    sess.set_providers(execution_providers)
+
+    input_dict = {}
+    for sess_input in sess.get_inputs():
+        input_name = sess_input.name
+        input_shape = sess_input.shape
+        for i in range(len(input_shape)):
+            if not isinstance(input_shape[i], int):
+                input_shape[i] = 1
+        dummy_input = np.random.rand(*input_shape).astype(np.float32)
+        input_dict[input_name] = dummy_input
+
+    for _ in range(num_warmups):
+        _ = sess.run(None, input_dict)
+
+    start_time = time.time()
+    for _ in range(num_samples):
+        _ = sess.run(None, input_dict)
+    end_time = time.time()
     elapsed_time = end_time - start_time
     elapsed_time_ave = elapsed_time / num_samples
 
@@ -294,6 +328,7 @@ class QuantizedResNet18(nn.Module):
         return x
 
 
+@torch.no_grad()
 def model_equivalence(model_1,
                       model_2,
                       device,
@@ -327,11 +362,26 @@ def main():
     cpu_device = torch.device("cpu:0")
 
     model_dir = "saved_models"
-    model_filename = "resnet18_cifar10.pt"
-    quantized_model_filename = "resnet18_quantized_cifar10.pt"
-    model_filepath = os.path.join(model_dir, model_filename)
+    torch_model_filename = "resnet18_cifar10.pt"
+    onnx_model_filename = "resnet18_cifar10.onnx"
+    quantized_torch_model_filename = "resnet18_quantized_cifar10.pt"
+    quantized_jit_model_filename = "resnet18_quantized_cifar10.jit"
+    quantized_onnx_model_filename = "resnet18_quantized_cifar10.onnx"
+    torch_model_filepath = os.path.join(model_dir, torch_model_filename)
+    onnx_model_filepath = os.path.join(model_dir, onnx_model_filename)
     quantized_model_filepath = os.path.join(model_dir,
-                                            quantized_model_filename)
+                                            quantized_torch_model_filename)
+    quantized_onnx_model_filepath = os.path.join(
+        model_dir, quantized_onnx_model_filename)
+    quantized_jit_model_filepath = os.path.join(
+        model_dir, quantized_jit_model_filename)
+
+    num_repeats = 100
+    num_warmups = 10
+    input_size = (1, 3, 32, 32)
+
+    onnx_input_names = ["image_input"]
+    onnx_output_names = ["prediction"]
 
     set_random_seeds(random_seed=random_seed)
 
@@ -342,19 +392,19 @@ def main():
                                                    train_batch_size=128,
                                                    eval_batch_size=256)
 
-    # Train model.
-    print("Training Model...")
-    model = train_model(model=model,
-                        train_loader=train_loader,
-                        test_loader=test_loader,
-                        device=cuda_device,
-                        learning_rate=1e-1,
-                        num_epochs=200)
-    # Save model.
-    save_model(model=model, model_dir=model_dir, model_filename=model_filename)
+    # # Train model.
+    # print("Training Model...")
+    # model = train_model(model=model,
+    #                     train_loader=train_loader,
+    #                     test_loader=test_loader,
+    #                     device=cuda_device,
+    #                     learning_rate=1e-1,
+    #                     num_epochs=200)
+    # # Save model.
+    # save_model(model=model, model_dir=model_dir, model_filename=torch_model_filename)
     # Load a pretrained model.
     model = load_model(model=model,
-                       model_filepath=model_filepath,
+                       model_filepath=torch_model_filepath,
                        device=cuda_device)
     # Move the model to CPU since static quantization does not support CUDA currently.
     model.to(cpu_device)
@@ -412,7 +462,11 @@ def main():
     quantization_config = torch.quantization.get_default_qconfig("fbgemm")
     # Custom quantization configurations
     # quantization_config = torch.quantization.default_qconfig
-    # quantization_config = torch.quantization.QConfig(activation=torch.quantization.MinMaxObserver.with_args(dtype=torch.quint8), weight=torch.quantization.MinMaxObserver.with_args(dtype=torch.qint8, qscheme=torch.per_tensor_symmetric))
+    # quantization_config = torch.quantization.QConfig(
+    #     activation=torch.quantization.MinMaxObserver.with_args(
+    #         dtype=torch.quint8),
+    #     weight=torch.quantization.MinMaxObserver.with_args(
+    #         dtype=torch.qint8, qscheme=torch.per_tensor_symmetric))
 
     quantized_model.qconfig = quantization_config
 
@@ -433,25 +487,21 @@ def main():
                 num_epochs=10)
     quantized_model.to(cpu_device)
 
-    # Using high-level static quantization wrapper
-    # The above steps, including torch.quantization.prepare, calibrate_model, and torch.quantization.convert, are also equivalent to
-    # quantized_model = torch.quantization.quantize_qat(model=quantized_model, run_fn=train_model, run_args=[train_loader, test_loader, cuda_device], mapping=None, inplace=False)
-
     quantized_model = torch.quantization.convert(quantized_model, inplace=True)
 
     quantized_model.eval()
 
-    # Print quantized model.
+    # Print quantized JIT model.
     print(quantized_model)
 
-    # Save quantized model.
+    # Save quantized JIT model.
     save_torchscript_model(model=quantized_model,
                            model_dir=model_dir,
-                           model_filename=quantized_model_filename)
+                           model_filename=quantized_jit_model_filename)
 
-    # Load quantized model.
+    # Load quantized JIT model.
     quantized_jit_model = load_torchscript_model(
-        model_filepath=quantized_model_filepath, device=cpu_device)
+        model_filepath=quantized_jit_model_filepath, device=cpu_device)
 
     _, fp32_eval_accuracy = evaluate_model(model=model,
                                            test_loader=test_loader,
@@ -462,42 +512,102 @@ def main():
                                            device=cpu_device,
                                            criterion=None)
 
+    # # Save model.
+    save_model(model=quantized_model, model_dir=model_dir, model_filename=quantized_torch_model_filename)
+    # Load a pretrained model.
+    # model = load_model(model=quantized_model,
+    #                    model_filepath=quantized_torch_model_filename,
+    #                    device=cuda_device)
+
     # Skip this assertion since the values might deviate a lot.
-    # assert model_equivalence(model_1=model, model_2=quantized_jit_model, device=cpu_device, rtol=1e-01, atol=1e-02, num_tests=100, input_size=(1,3,32,32)), "Quantized model deviates from the original model too much!"
+    # assert model_equivalence(
+    #     model_1=model,
+    #     model_2=quantized_jit_model,
+    #     device=cpu_device,
+    #     rtol=1e-01,
+    #     atol=1e-02,
+    #     num_tests=100,
+    #     input_size=(
+    #         1, 3, 32,
+    #         32)), "Quantized model deviates from the original model too much!"
 
     print("FP32 evaluation accuracy: {:.3f}".format(fp32_eval_accuracy))
     print("INT8 evaluation accuracy: {:.3f}".format(int8_eval_accuracy))
 
-    fp32_cpu_inference_latency = measure_inference_latency(model=model,
-                                                           device=cpu_device,
-                                                           input_size=(1, 3,
-                                                                       32, 32),
-                                                           num_samples=100)
+    fp32_cpu_inference_latency = measure_inference_latency(
+        model=model,
+        device=cpu_device,
+        input_size=input_size,
+        num_samples=num_repeats,
+        num_warmups=num_warmups,
+    )
     int8_cpu_inference_latency = measure_inference_latency(
         model=quantized_model,
         device=cpu_device,
-        input_size=(1, 3, 32, 32),
-        num_samples=100)
+        input_size=input_size,
+        num_samples=num_repeats,
+        num_warmups=num_warmups,
+    )
     int8_jit_cpu_inference_latency = measure_inference_latency(
         model=quantized_jit_model,
         device=cpu_device,
-        input_size=(1, 3, 32, 32),
-        num_samples=100)
-    fp32_gpu_inference_latency = measure_inference_latency(model=model,
-                                                           device=cuda_device,
-                                                           input_size=(1, 3,
-                                                                       32, 32),
-                                                           num_samples=100)
+        input_size=input_size,
+        num_samples=num_repeats,
+        num_warmups=num_warmups,
+    )
+    fp32_gpu_inference_latency = measure_inference_latency(
+        model=model,
+        device=cuda_device,
+        input_size=input_size,
+        num_samples=num_repeats,
+        num_warmups=num_warmups,
+    )
 
-    print("FP32 CPU Inference Latency: {:.2f} ms / sample".format(
+    print("Torch CPU FP32 Inference Latency: {:.2f} ms / sample".format(
         fp32_cpu_inference_latency * 1000))
-    print("FP32 CUDA Inference Latency: {:.2f} ms / sample".format(
+    print("Torch CUDA FP32 Inference Latency: {:.2f} ms / sample".format(
         fp32_gpu_inference_latency * 1000))
-    print("INT8 CPU Inference Latency: {:.2f} ms / sample".format(
+    print("Torch CPU INT8 Inference Latency: {:.2f} ms / sample".format(
         int8_cpu_inference_latency * 1000))
-    print("INT8 JIT CPU Inference Latency: {:.2f} ms / sample".format(
+    print("Torch JIT CPU INT8 Inference Latency: {:.2f} ms / sample".format(
         int8_jit_cpu_inference_latency * 1000))
 
+    # ONNX export
+    dummy_input = torch.rand(*input_size).float().to(cuda_device)
+    torch.onnx.export(model,
+                      dummy_input,
+                      onnx_model_filepath,
+                      verbose=False,
+                      opset_version=13,
+                      input_names=onnx_input_names,
+                      output_names=onnx_output_names)
+    dummy_input = dummy_input.to(cpu_device)
+    torch.onnx.export(quantized_model,
+                      dummy_input,
+                      quantized_onnx_model_filepath,
+                      verbose=False,
+                      opset_version=13,
+                      input_names=onnx_input_names,
+                      output_names=onnx_output_names)
+
+    # ONNX Runtime inference
+    fp32_onnx_runtime_gpu_inference_latency = measure_onnxruntime_inference_latency(
+        onnx_model_filepath=onnx_model_filepath,
+        execution_providers=["CUDAExecutionProvider"],
+        num_samples=num_repeats,
+        num_warmups=num_warmups,
+    )
+    int8_onnx_runtime_gpu_inference_latency = measure_onnxruntime_inference_latency(
+        onnx_model_filepath=quantized_onnx_model_filepath,
+        execution_providers=["CUDAExecutionProvider"],
+        num_samples=num_repeats,
+        num_warmups=num_warmups,
+    )
+
+    print("ONNX Runtime CUDA FP32 Inference Latency: {:.2f} ms / sample".format(
+        fp32_onnx_runtime_gpu_inference_latency * 1000))
+    print("ONNX Runtime CUDA INT8 Inference Latency: {:.2f} ms / sample".format(
+        int8_onnx_runtime_gpu_inference_latency * 1000))
 
 if __name__ == "__main__":
 

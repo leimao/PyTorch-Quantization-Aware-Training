@@ -9,13 +9,13 @@ PyTorch quantization aware training example for ResNet.
 ### Build Docker Image
 
 ```
-$ docker build -f docker/pytorch.Dockerfile --no-cache --tag=pytorch:1.8.1 .
+$ docker build -f docker/pytorch.Dockerfile --no-cache --tag=pytorch:1.10.0 .
 ```
 
 ### Run Docker Container
 
 ```
-$ docker run -it --rm --gpus device=0 --ipc=host -v $(pwd):/mnt pytorch:1.8.1
+$ docker run -it --rm --gpus device=0 --ipc=host -v $(pwd):/mnt pytorch:1.10.0
 ```
 
 ### Run ResNet
