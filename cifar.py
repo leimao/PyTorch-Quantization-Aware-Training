@@ -11,7 +11,7 @@ import time
 import copy
 import numpy as np
 
-from resnet import resnet18
+from timm.models.resnet import resnet18
 
 
 def set_random_seeds(random_seed=0):
